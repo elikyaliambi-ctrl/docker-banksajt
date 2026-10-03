@@ -5,7 +5,7 @@ men nu med data i en MySQL databas och allt körandes i Docker containrar.
 
 ## Sajten live
 
-https://ÄNDRA-TILL-DIN-EC2-ADRESS-HÄR:3000
+http://18.209.43.23:3000
 
 ## Köra lokalt
 
@@ -43,7 +43,7 @@ om helt från tomma tabeller nästa gång.
 3. Klona repot:
 
    ```bash
-   git clone https://github.com/ANVÄNDARNAMN/docker-banksajt.git
+   git clone https://github.com/elikyaliambi-ctrl/docker-banksajt.git
    cd docker-banksajt
    ```
 
@@ -52,8 +52,11 @@ om helt från tomma tabeller nästa gång.
    besökarens egen dator, inte servern):
 
    ```bash
-   NEXT_PUBLIC_API_URL=http://DIN-EC2-IP:3001 sudo docker compose up -d --build
+   sudo NEXT_PUBLIC_API_URL=http://DIN-EC2-IP:3001 docker compose up -d --build
    ```
+
+   (variabeln måste stå efter `sudo`, annars nollställs den och bygget
+   hamnar på fel adress)
 
 5. Kontrollera att containrarna kör:
 
