@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { API_URL } from "@/lib/api";
 
 export default function AccountPage() {
@@ -123,10 +124,17 @@ export default function AccountPage() {
         </button>
       </form>
 
+      <Link
+        href="/transactions"
+        className="mt-6 self-start text-sm text-zinc-700 underline dark:text-zinc-300"
+      >
+        Se transaktioner
+      </Link>
+
       <button
         type="button"
         onClick={handleLogout}
-        className="mt-6 self-start text-sm text-zinc-500 underline dark:text-zinc-400"
+        className="mt-4 self-start text-sm text-zinc-500 underline dark:text-zinc-400"
       >
         Logga ut
       </button>

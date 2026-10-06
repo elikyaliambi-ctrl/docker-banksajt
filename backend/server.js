@@ -2,6 +2,7 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
+import { validateAmount } from './src/validateAmount.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -38,6 +39,30 @@ async function query(sql, params) {
 async function getUserIdFromToken(token) {
     const rows = await query('SELECT userId FROM sessions WHERE token = ?', [token]);
     return rows[0] ? rows[0].userId : undefined;
+}
+
+// Läser token ur Authorization: Bearer <token> headern, används av
+// GET-anrop som inte kan skicka med en JSON-body.
+function getTokenFromHeader(req) {
+    const header = req.headers.authorization || '';
+    return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+}
+
+// Skapar transactions-tabellen om den inte redan finns. database/init.sql
+// körs bara av MySQL-containern första gången en ny databasvolym skapas,
+// så det här gör samma sak vid varje uppstart för befintliga installationer.
+async function ensureSchema() {
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            accountId INT UNSIGNED NOT NULL,
+            type VARCHAR(20) NOT NULL DEFAULT 'deposit',
+            amount INT NOT NULL,
+            createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY transactions_accountId_idx (accountId)
+        )
+    `);
 }
 
 // Skapar en ny användare och ett tillhörande konto med 0 kr i saldo
@@ -102,7 +127,9 @@ app.post('/me/accounts', async (req, res) => {
     res.status(200).json({ amount: rows[0].amount });
 });
 
-// Sätter in pengar på kontot och returnerar det nya saldot
+// Sätter in pengar på kontot, loggar en transaktion och returnerar det nya
+// saldot. Saldot och transaktionsraden uppdateras i samma databastransaktion
+// så de aldrig kan hamna i otakt med varandra.
 app.post('/me/accounts/transactions', async (req, res) => {
     const { token, amount } = req.body;
     const userId = await getUserIdFromToken(token);
@@ -111,18 +138,68 @@ app.post('/me/accounts/transactions', async (req, res) => {
         return res.status(401).json({ error: 'Ogiltigt engångslösenord' });
     }
 
-    if (typeof amount !== 'number' || amount <= 0) {
+    if (!validateAmount(amount)) {
         return res.status(400).json({ error: 'Ogiltigt belopp' });
     }
 
-    const rows = await query('SELECT amount FROM accounts WHERE userId = ?', [userId]);
-    const newAmount = rows[0].amount + amount;
-    await query('UPDATE accounts SET amount = ? WHERE userId = ?', [newAmount, userId]);
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
 
-    res.status(200).json({ amount: newAmount });
+        const [accountRows] = await connection.execute(
+            'SELECT id, amount FROM accounts WHERE userId = ? FOR UPDATE',
+            [userId],
+        );
+        const account = accountRows[0];
+        const newAmount = account.amount + amount;
+
+        await connection.execute('UPDATE accounts SET amount = ? WHERE id = ?', [newAmount, account.id]);
+        await connection.execute(
+            'INSERT INTO transactions (accountId, type, amount) VALUES (?, ?, ?)',
+            [account.id, 'deposit', amount],
+        );
+
+        await connection.commit();
+        res.status(200).json({ amount: newAmount });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Fel vid insättning', error);
+        res.status(500).json({ error: 'Något gick fel' });
+    } finally {
+        connection.release();
+    }
 });
 
-// Starta servern
-app.listen(port, () => {
-    console.log(`Bankens backend körs på http://localhost:${port}`);
+// Hämtar den inloggade användarens egna transaktioner, senaste först.
+// Token skickas i Authorization-headern eftersom GET-anrop inte har en body.
+app.get('/me/accounts/transactions', async (req, res) => {
+    const token = getTokenFromHeader(req);
+    const userId = await getUserIdFromToken(token);
+
+    if (!userId) {
+        return res.status(401).json({ error: 'Ogiltigt eller saknat engångslösenord' });
+    }
+
+    const rows = await query(
+        `SELECT t.amount, t.type, t.createdAt
+         FROM transactions t
+         JOIN accounts a ON a.id = t.accountId
+         WHERE a.userId = ?
+         ORDER BY t.createdAt DESC`,
+        [userId],
+    );
+
+    res.status(200).json({ transactions: rows });
 });
+
+// Säkerställ databasschemat, starta sedan servern
+ensureSchema()
+    .then(() => {
+        app.listen(port, () => {
+            console.log(`Bankens backend körs på http://localhost:${port}`);
+        });
+    })
+    .catch((error) => {
+        console.error('Kunde inte säkerställa databasschema', error);
+        process.exit(1);
+    });
