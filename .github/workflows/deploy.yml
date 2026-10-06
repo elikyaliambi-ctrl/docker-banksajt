@@ -50,9 +50,56 @@ jobs:
         working-directory: ./backend
         run: node --check server.js
 
+      - name: Kor Vitest
+        working-directory: ./backend
+        run: npm test
+
+  e2e:
+    name: Kor Playwright e2e-tester
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kod
+        uses: actions/checkout@v4
+
+      - name: Bygg och starta teststacken
+        run: docker compose -f docker-compose.test.yml up -d --build
+
+      - name: Vanta tills backend svarar
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://localhost:3011/sessions -X POST -H "Content-Type: application/json" -d "{}"; then
+              echo "Backend svarar"
+              break
+            fi
+            echo "Vantar pa backend..."
+            sleep 2
+          done
+
+      - name: Satt upp Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Installera Playwright webblasare
+        working-directory: ./frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Kor Playwright tester
+        working-directory: ./frontend
+        run: npx playwright test
+
+      - name: Stang ner teststacken
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
+
   deploy:
     name: Deploy till EC2
-    needs: [frontend, backend]
+    needs: [frontend, backend, e2e]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy via SSH
