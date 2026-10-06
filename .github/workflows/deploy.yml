@@ -64,14 +64,15 @@ jobs:
       - name: Bygg och starta teststacken
         run: docker compose -f docker-compose.test.yml up -d --build
 
-      - name: Vanta tills backend svarar
+      - name: Vanta tills databasen ar redo
         run: |
           for i in $(seq 1 30); do
-            if curl -s -o /dev/null http://localhost:3011/sessions -X POST -H "Content-Type: application/json" -d "{}"; then
-              echo "Backend svarar"
+            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3011/sessions -H "Content-Type: application/json" -d "{\"username\":\"healthcheck\",\"password\":\"healthcheck\"}")
+            if [ "$status" = "401" ]; then
+              echo "Databasen ar redo"
               break
             fi
-            echo "Vantar pa backend..."
+            echo "Vantar (fick status $status)..."
             sleep 2
           done
 
