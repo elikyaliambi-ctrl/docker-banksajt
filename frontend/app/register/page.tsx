@@ -60,12 +60,13 @@ export default function RegisterPage() {
         </label>
 
         <label className="flex flex-col gap-2 text-sm font-medium text-zinc-800 dark:text-zinc-200">
-          Lösenord
+          Lösenord (minst 8 tecken)
           <input
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             required
+            minLength={8}
             className="rounded-md border border-black/10 bg-white px-3 py-2 text-base text-black dark:border-white/20 dark:bg-black dark:text-zinc-50"
           />
         </label>

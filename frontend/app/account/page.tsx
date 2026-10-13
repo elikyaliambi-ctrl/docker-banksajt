@@ -4,26 +4,25 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { API_URL } from "@/lib/api";
+import { useAuth } from "@/lib/AuthContext";
 
 export default function AccountPage() {
   const router = useRouter();
+  const { accessToken, logout } = useAuth();
   const [amount, setAmount] = useState<number | null>(null);
   const [depositValue, setDepositValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const storedToken = window.localStorage.getItem("token");
-
-    if (!storedToken) {
+    if (!accessToken) {
       router.replace("/login");
       return;
     }
 
     fetch(`${API_URL}/me/accounts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: storedToken }),
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then(async (response) => {
         if (!response.ok) {
@@ -33,18 +32,17 @@ export default function AccountPage() {
       })
       .then((data) => setAmount(data.amount))
       .catch(() => {
-        window.localStorage.removeItem("token");
+        logout();
         router.replace("/login");
       });
-  }, [router]);
+  }, [accessToken, logout, router]);
 
   async function handleDeposit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
 
-    const token = window.localStorage.getItem("token");
     const parsedAmount = Number(depositValue);
-    if (!token || !parsedAmount || parsedAmount <= 0) {
+    if (!accessToken || !parsedAmount || parsedAmount <= 0) {
       setError("Ange ett giltigt belopp");
       return;
     }
@@ -53,8 +51,11 @@ export default function AccountPage() {
     try {
       const response = await fetch(`${API_URL}/me/accounts/transactions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, amount: parsedAmount }),
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ amount: parsedAmount }),
       });
 
       const data = await response.json().catch(() => ({}));
@@ -73,7 +74,7 @@ export default function AccountPage() {
   }
 
   function handleLogout() {
-    window.localStorage.removeItem("token");
+    logout();
     router.push("/login");
   }
 

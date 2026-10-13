@@ -4,9 +4,11 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { API_URL } from "@/lib/api";
+import { useAuth } from "@/lib/AuthContext";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { setAccessToken } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +32,7 @@ export default function LoginPage() {
         throw new Error(data.error || "Fel användarnamn eller lösenord");
       }
 
-      window.localStorage.setItem("token", data.token);
+      setAccessToken(data.token);
       router.push("/account");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Något gick fel");

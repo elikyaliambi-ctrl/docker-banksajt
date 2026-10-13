@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { API_URL } from "@/lib/api";
+import { useAuth } from "@/lib/AuthContext";
 
 type Transaction = {
   amount: number;
@@ -13,18 +14,17 @@ type Transaction = {
 
 export default function TransactionsPage() {
   const router = useRouter();
+  const { accessToken, logout } = useAuth();
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
 
   useEffect(() => {
-    const storedToken = window.localStorage.getItem("token");
-
-    if (!storedToken) {
+    if (!accessToken) {
       router.replace("/login");
       return;
     }
 
     fetch(`${API_URL}/me/accounts/transactions`, {
-      headers: { Authorization: `Bearer ${storedToken}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then(async (response) => {
         if (!response.ok) {
@@ -34,10 +34,10 @@ export default function TransactionsPage() {
       })
       .then((data) => setTransactions(data.transactions))
       .catch(() => {
-        window.localStorage.removeItem("token");
+        logout();
         router.replace("/login");
       });
-  }, [router]);
+  }, [accessToken, logout, router]);
 
   function formatDate(value: string) {
     return new Date(value).toLocaleString("sv-SE", {

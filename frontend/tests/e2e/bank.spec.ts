@@ -7,6 +7,7 @@ function uniqueUsername() {
 }
 
 const PASSWORD = "ett-tillrackligt-langt-losenord";
+const BACKEND_URL = "http://localhost:3011";
 
 async function registerAndLogin(page: Page, username: string, password: string) {
   await page.goto("/register");
@@ -52,7 +53,7 @@ test("ny användare kan registrera sig, logga in, sätta in pengar och se histor
   await expect(page.getByText("+250 kr")).toBeVisible();
 });
 
-test("historik finns kvar efter omladdning och ny inloggning, ogiltigt belopp ändrar inget", async ({
+test("historik och saldo finns kvar efter omladdning och ny inloggning, ogiltigt belopp ändrar inget", async ({
   page,
 }) => {
   const username = uniqueUsername();
@@ -66,25 +67,24 @@ test("historik finns kvar efter omladdning och ny inloggning, ogiltigt belopp ä
   await page.getByRole("button", { name: "Sätt in" }).click();
   await expect(page.getByText("100 kr")).toBeVisible();
 
-  // Ladda om sidan, saldot ska finnas kvar.
+  // Access-token finns bara i React state, inte i localStorage. En
+  // omladdning nollställer alltså React och loggar ut användaren, det är
+  // avsiktligt beteende i den här uppgiften.
   await page.reload();
-  await expect(page.getByText("100 kr")).toBeVisible();
+  await expect(page).toHaveURL(/\/login/);
 
-  // Historiken ska också finnas kvar, och det ogiltiga försöket ska inte
-  // synas som en egen rad.
-  await page.getByRole("link", { name: "Se transaktioner" }).click();
-  await expect(page.getByText("+100 kr")).toBeVisible();
-  await expect(page.getByText("+0 kr")).toHaveCount(0);
-
-  // Ny inloggning (simulerar utloggning och inloggning igen).
-  await page.evaluate(() => window.localStorage.removeItem("token"));
-  await page.goto("/login");
+  // Historiken ska finnas kvar i databasen trots utloggningen, och det
+  // ogiltiga försöket ska inte synas som en egen rad.
   await page.getByLabel("Användarnamn").fill(username);
   await page.getByLabel("Lösenord").fill(PASSWORD);
   await page.getByRole("button", { name: "Logga in" }).click();
 
   await expect(page).toHaveURL(/\/account/);
   await expect(page.getByText("100 kr")).toBeVisible();
+
+  await page.getByRole("link", { name: "Se transaktioner" }).click();
+  await expect(page.getByText("+100 kr")).toBeVisible();
+  await expect(page.getByText("+0 kr")).toHaveCount(0);
 });
 
 test("två användares transaktionshistorik hålls åtskild", async ({ page }) => {
@@ -96,11 +96,45 @@ test("två användares transaktionshistorik hålls åtskild", async ({ page }) =
   await page.getByRole("link", { name: "Se transaktioner" }).click();
   await expect(page.getByText("+300 kr")).toBeVisible();
 
-  await page.evaluate(() => window.localStorage.removeItem("token"));
+  // Omladdning loggar ut (se testet ovan), så det ersätter den tidigare
+  // manuella localStorage-rensningen mellan de två användarna.
+  await page.reload();
 
   await registerAndLogin(page, userB, PASSWORD);
   await deposit(page, "75");
   await page.getByRole("link", { name: "Se transaktioner" }).click();
   await expect(page.getByText("+75 kr")).toBeVisible();
   await expect(page.getByText("+300 kr")).toHaveCount(0);
+});
+
+test("skyddat API-anrop fungerar med giltig token och nekas utan eller med manipulerad token", async ({
+  request,
+}) => {
+  const username = uniqueUsername();
+
+  await request.post(`${BACKEND_URL}/users`, {
+    data: { username, password: PASSWORD },
+  });
+
+  const loginResponse = await request.post(`${BACKEND_URL}/sessions`, {
+    data: { username, password: PASSWORD },
+  });
+  const { token } = await loginResponse.json();
+
+  // Giltig token ska ge tillgång till kontot.
+  const okResponse = await request.post(`${BACKEND_URL}/me/accounts`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(okResponse.status()).toBe(200);
+
+  // Saknad token ska nekas.
+  const noTokenResponse = await request.post(`${BACKEND_URL}/me/accounts`);
+  expect(noTokenResponse.status()).toBe(401);
+
+  // En token med ett ändrat tecken i signaturen ska nekas.
+  const tamperedToken = token.slice(0, -1) + (token.endsWith("a") ? "b" : "a");
+  const tamperedResponse = await request.post(`${BACKEND_URL}/me/accounts`, {
+    headers: { Authorization: `Bearer ${tamperedToken}` },
+  });
+  expect(tamperedResponse.status()).toBe(401);
 });

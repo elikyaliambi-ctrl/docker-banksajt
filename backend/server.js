@@ -2,22 +2,30 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { validateAmount } from './src/validateAmount.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
 
+// Signeringsnyckeln för JWT måste finnas och vara minst 32 byte.
+// Servern avslutas direkt med ett tydligt fel annars, istället för att
+// starta med en svag eller saknad nyckel.
+const secret = process.env.JWT_SECRET;
+
+if (!secret || Buffer.byteLength(secret, 'utf8') < 32) {
+    throw new Error('JWT_SECRET måste vara minst 32 byte');
+}
+
+const JWT_ISSUER = 'banken';
+const JWT_AUDIENCE = 'banken-api';
+
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
 
-// Genererar ett sexsiffrigt engångslösenord
-function generateOTP() {
-    const otp = Math.floor(100000 + Math.random() * 900000);
-    return otp.toString();
-}
-
-// Datat lagras nu i en MySQL-databas som körs i en egen container.
+// Datat lagras i en MySQL-databas som körs i en egen container.
 // Anslutningsuppgifterna kommer från miljövariabler som docker-compose
 // skickar in, med lokala standardvärden så servern även går att köra
 // utanför Docker om man har en egen MySQL igång.
@@ -35,17 +43,42 @@ async function query(sql, params) {
     return rows;
 }
 
-// Slår upp vilket userId ett engångslösenord tillhör
-async function getUserIdFromToken(token) {
-    const rows = await query('SELECT userId FROM sessions WHERE token = ?', [token]);
-    return rows[0] ? rows[0].userId : undefined;
-}
+// Skyddar routes som kräver en inloggad användare. Läser token ur
+// Authorization: Bearer <token>, verifierar signatur, utgångstid, issuer
+// och audience, och lägger ett kontrollerat användar-id i req.userId.
+// Anropar aldrig next() om någon kontroll misslyckas.
+function requireAuth(req, res, next) {
+    const header = req.get('authorization') || '';
 
-// Läser token ur Authorization: Bearer <token> headern, används av
-// GET-anrop som inte kan skicka med en JSON-body.
-function getTokenFromHeader(req) {
-    const header = req.headers.authorization || '';
-    return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+    if (!header.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Saknar giltig Authorization-header' });
+    }
+
+    const token = header.slice('Bearer '.length);
+
+    let payload;
+    try {
+        payload = jwt.verify(token, secret, {
+            algorithms: ['HS256'],
+            issuer: JWT_ISSUER,
+            audience: JWT_AUDIENCE,
+        });
+    } catch (error) {
+        return res.status(401).json({ error: 'Ogiltig eller utgången token' });
+    }
+
+    if (typeof payload !== 'object' || payload === null || typeof payload.sub !== 'string') {
+        return res.status(401).json({ error: 'Ogiltig eller utgången token' });
+    }
+
+    const userId = Number(payload.sub);
+
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+        return res.status(401).json({ error: 'Ogiltig eller utgången token' });
+    }
+
+    req.userId = userId;
+    next();
 }
 
 // Skapar transactions-tabellen om den inte redan finns. database/init.sql
@@ -65,7 +98,8 @@ async function ensureSchema() {
     `);
 }
 
-// Skapar en ny användare och ett tillhörande konto med 0 kr i saldo
+// Skapar en ny användare och ett tillhörande konto med 0 kr i saldo.
+// Lösenordet sparas aldrig i klartext, bara dess bcrypt-hash.
 app.post('/users', async (req, res) => {
     const { username, password } = req.body;
 
@@ -73,10 +107,16 @@ app.post('/users', async (req, res) => {
         return res.status(400).json({ error: 'Användarnamn och lösenord krävs' });
     }
 
+    if (typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ error: 'Lösenordet måste vara minst 8 tecken' });
+    }
+
     try {
+        const passwordHash = await bcrypt.hash(password, 12);
+
         const result = await query(
-            'INSERT INTO users (username, password) VALUES (?, ?)',
-            [username, password],
+            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+            [username, passwordHash],
         );
         const userId = result.insertId;
 
@@ -93,36 +133,43 @@ app.post('/users', async (req, res) => {
     }
 });
 
-// Loggar in användaren och skapar ett engångslösenord (token)
+// Loggar in användaren: jämför lösenordet mot det sparade hashvärdet och
+// skapar en kortlivad JWT istället för den tidigare engångskoden.
 app.post('/sessions', async (req, res) => {
     const { username, password } = req.body;
 
-    const rows = await query(
-        'SELECT * FROM users WHERE username = ? AND password = ?',
-        [username, password],
-    );
-    const user = rows[0];
-
-    if (!user) {
+    if (!username || !password) {
         return res.status(401).json({ error: 'Fel användarnamn eller lösenord' });
     }
 
-    const token = generateOTP();
-    await query('INSERT INTO sessions (userId, token) VALUES (?, ?)', [user.id, token]);
+    const rows = await query('SELECT * FROM users WHERE username = ?', [username]);
+    const user = rows[0];
+
+    // Samma felmeddelande oavsett om användarnamnet saknas eller lösenordet
+    // är fel, så ett svar aldrig avslöjar vilka användarnamn som finns.
+    const passwordIsCorrect = user ? await bcrypt.compare(password, user.password_hash) : false;
+
+    if (!user || !passwordIsCorrect) {
+        return res.status(401).json({ error: 'Fel användarnamn eller lösenord' });
+    }
+
+    const token = jwt.sign({ sub: String(user.id) }, secret, {
+        algorithm: 'HS256',
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        expiresIn: '15m',
+    });
 
     res.status(200).json({ token });
 });
 
-// Returnerar saldot för kontot som hör till token
-app.post('/me/accounts', async (req, res) => {
-    const { token } = req.body;
-    const userId = await getUserIdFromToken(token);
+// Returnerar saldot för kontot som hör till den inloggade användaren
+app.post('/me/accounts', requireAuth, async (req, res) => {
+    const rows = await query('SELECT amount FROM accounts WHERE userId = ?', [req.userId]);
 
-    if (!userId) {
-        return res.status(401).json({ error: 'Ogiltigt engångslösenord' });
+    if (!rows[0]) {
+        return res.status(404).json({ error: 'Kontot kunde inte hittas' });
     }
-
-    const rows = await query('SELECT amount FROM accounts WHERE userId = ?', [userId]);
 
     res.status(200).json({ amount: rows[0].amount });
 });
@@ -130,13 +177,8 @@ app.post('/me/accounts', async (req, res) => {
 // Sätter in pengar på kontot, loggar en transaktion och returnerar det nya
 // saldot. Saldot och transaktionsraden uppdateras i samma databastransaktion
 // så de aldrig kan hamna i otakt med varandra.
-app.post('/me/accounts/transactions', async (req, res) => {
-    const { token, amount } = req.body;
-    const userId = await getUserIdFromToken(token);
-
-    if (!userId) {
-        return res.status(401).json({ error: 'Ogiltigt engångslösenord' });
-    }
+app.post('/me/accounts/transactions', requireAuth, async (req, res) => {
+    const { amount } = req.body;
 
     if (!validateAmount(amount)) {
         return res.status(400).json({ error: 'Ogiltigt belopp' });
@@ -148,7 +190,7 @@ app.post('/me/accounts/transactions', async (req, res) => {
 
         const [accountRows] = await connection.execute(
             'SELECT id, amount FROM accounts WHERE userId = ? FOR UPDATE',
-            [userId],
+            [req.userId],
         );
         const account = accountRows[0];
         const newAmount = account.amount + amount;
@@ -171,22 +213,14 @@ app.post('/me/accounts/transactions', async (req, res) => {
 });
 
 // Hämtar den inloggade användarens egna transaktioner, senaste först.
-// Token skickas i Authorization-headern eftersom GET-anrop inte har en body.
-app.get('/me/accounts/transactions', async (req, res) => {
-    const token = getTokenFromHeader(req);
-    const userId = await getUserIdFromToken(token);
-
-    if (!userId) {
-        return res.status(401).json({ error: 'Ogiltigt eller saknat engångslösenord' });
-    }
-
+app.get('/me/accounts/transactions', requireAuth, async (req, res) => {
     const rows = await query(
         `SELECT t.amount, t.type, t.createdAt
          FROM transactions t
          JOIN accounts a ON a.id = t.accountId
          WHERE a.userId = ?
          ORDER BY t.createdAt DESC`,
-        [userId],
+        [req.userId],
     );
 
     res.status(200).json({ transactions: rows });
