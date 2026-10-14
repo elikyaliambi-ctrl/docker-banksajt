@@ -61,6 +61,11 @@ jobs:
       - name: Checkout kod
         uses: actions/checkout@v4
 
+      - name: Kontrollera JWT_SECRET langd
+        env:
+          JWT_SECRET: ${{ secrets.TEST_JWT_SECRET }}
+        run: echo "Langd pa JWT_SECRET: ${#JWT_SECRET}"
+
       - name: Bygg och starta teststacken
         env:
           JWT_SECRET: ${{ secrets.TEST_JWT_SECRET }}
@@ -68,6 +73,8 @@ jobs:
 
       - name: Visa containerstatus och loggar
         if: always()
+        env:
+          JWT_SECRET: ${{ secrets.TEST_JWT_SECRET }}
         run: |
           docker compose -f docker-compose.test.yml ps
           docker compose -f docker-compose.test.yml logs
