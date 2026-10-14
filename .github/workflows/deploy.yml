@@ -66,10 +66,17 @@ jobs:
           JWT_SECRET: ${{ secrets.TEST_JWT_SECRET }}
         run: docker compose -f docker-compose.test.yml up -d --build
 
+      - name: Visa containerstatus och loggar
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml logs
+
       - name: Vanta tills databasen ar redo
         run: |
+          status="000"
           for i in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3011/sessions -H "Content-Type: application/json" -d "{\"username\":\"healthcheck\",\"password\":\"healthcheck\"}")
+            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3011/sessions -H "Content-Type: application/json" -d "{\"username\":\"healthcheck\",\"password\":\"healthcheck\"}" || echo "000")
             if [ "$status" = "401" ]; then
               echo "Databasen ar redo"
               break
@@ -77,6 +84,11 @@ jobs:
             echo "Vantar (fick status $status)..."
             sleep 2
           done
+          if [ "$status" != "401" ]; then
+            echo "Backend svarade aldrig korrekt (sista status: $status), visar loggar:"
+            docker compose -f docker-compose.test.yml logs express
+            exit 1
+          fi
 
       - name: Satt upp Node
         uses: actions/setup-node@v4
