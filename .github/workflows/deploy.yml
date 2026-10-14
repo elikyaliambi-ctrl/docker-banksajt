@@ -64,7 +64,7 @@ jobs:
       - name: Kontrollera JWT_SECRET langd
         env:
           JWT_SECRET: ${{ secrets.TEST_JWT_SECRET }}
-        run: echo "Langd pa JWT_SECRET: ${#JWT_SECRET}"
+        run: echo "Langd pa JWT_SECRET: $(echo -n "$JWT_SECRET" | wc -c)"
 
       - name: Bygg och starta teststacken
         env:
