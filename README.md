@@ -73,7 +73,7 @@ GitHub Actions kör samma kedja automatiskt vid push till `main`: lint och
 build av frontend, Vitest för backend, Playwright mot teststacken, och
 deploy till EC2 bara om alla tre tidigare jobb är gröna.
 
-Länk till en grön körning: KLISTRA IN LÄNK TILL EN GRÖN GITHUB ACTIONS-KÖRNING HÄR
+Länk till en grön körning: https://github.com/elikyaliambi-ctrl/docker-banksajt/actions/runs/38590250712
 
 ## Köra på EC2
 
